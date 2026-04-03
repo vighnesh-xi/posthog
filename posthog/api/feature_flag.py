@@ -2650,137 +2650,6 @@ class FeatureFlagViewSet(
             }
         )
 
-    def _apply_filters(self, filters: dict, queryset: QuerySet) -> QuerySet:
-        """
-        Apply filters to queryset.
-
-        Handles both string values (from URL query params) and native Python types (from JSON body).
-        Used by both _filter_request and bulk_delete endpoints.
-        """
-
-        for key, value in filters.items():
-            if key == "active":
-                if value == "STALE":
-                    # Get stale flags using the best available signal:
-                    # 1. If last_called_at exists: flag hasn't been called in 30+ days
-                    # 2. If last_called_at is NULL: flag is 100% rolled out and 30+ days old
-                    stale_threshold = thirty_days_ago()
-                    usage_based_stale = Q(last_called_at__lt=stale_threshold, active=True)
-                    # nosemgrep: python.django.security.audit.query-set-extra.avoid-query-set-extra (static SQL, no user input)
-                    config_based_queryset = queryset.filter(
-                        last_called_at__isnull=True,
-                        active=True,
-                        created_at__lt=stale_threshold,
-                    ).extra(
-                        where=[
-                            """
-                            (
-                                (
-                                    EXISTS (
-                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
-                                        WHERE elem->>'rollout_percentage' = '100'
-                                        AND (elem->'properties')::text = '[]'::text
-                                    )
-                                    AND (posthog_featureflag.filters->>'multivariate' IS NULL OR jsonb_array_length(posthog_featureflag.filters->'multivariate'->'variants') = 0)
-                                )
-                                OR
-                                (
-                                    EXISTS (
-                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'multivariate'->'variants') AS variant
-                                        WHERE variant->>'rollout_percentage' = '100'
-                                    )
-                                    AND EXISTS (
-                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
-                                        WHERE elem->>'rollout_percentage' = '100'
-                                        AND (elem->'properties')::text = '[]'::text
-                                    )
-                                )
-                                OR
-                                (
-                                    EXISTS (
-                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
-                                        WHERE elem->>'rollout_percentage' = '100'
-                                        AND (elem->'properties')::text = '[]'::text
-                                        AND elem->'variant' IS NOT NULL
-                                    )
-                                    AND (posthog_featureflag.filters->>'multivariate' IS NOT NULL AND jsonb_array_length(posthog_featureflag.filters->'multivariate'->'variants') > 0)
-                                )
-                                OR (posthog_featureflag.filters IS NULL OR posthog_featureflag.filters = '{}'::jsonb)
-                            )
-                            """
-                        ]
-                    )
-                    queryset = queryset.filter(usage_based_stale) | config_based_queryset
-                else:
-                    # Handle both string "true"/"false" and boolean True/False
-                    is_active = value == "true" or value is True
-                    queryset = queryset.filter(active=is_active)
-            elif key == "created_by_id":
-                queryset = queryset.filter(created_by_id=value)
-            elif key == "search":
-                if isinstance(value, str):
-                    value = value.strip()
-                    if value:
-                        # Limit search term length for performance safety
-                        if len(value) > 200:
-                            raise serializers.ValidationError("Search term cannot exceed 200 characters")
-
-                        # Escape regex metacharacters first, then replace spaces with word boundary pattern
-                        escaped_value = re.escape(value)
-                        regex_pattern = escaped_value.replace(r"\ ", r"[\s\-_]*")
-                        queryset = queryset.filter(
-                            Q(key__iregex=regex_pattern)
-                            | Q(name__iregex=regex_pattern)
-                            | Q(experiment__name__iregex=regex_pattern, experiment__deleted=False)
-                        ).distinct()
-            elif key == "type":
-                if value == "boolean":
-                    queryset = queryset.filter(
-                        Q(filters__multivariate__variants__isnull=True) | Q(filters__multivariate__variants=[])
-                    )
-                elif value == "multivariant":
-                    queryset = queryset.filter(
-                        Q(filters__multivariate__variants__isnull=False) & ~Q(filters__multivariate__variants=[])
-                    )
-                elif value == "experiment":
-                    queryset = queryset.filter(~Q(experiment__isnull=True))
-                elif value == "remote_config":
-                    queryset = queryset.filter(is_remote_configuration=True)
-            elif key == "evaluation_runtime":
-                queryset = queryset.filter(evaluation_runtime=value)
-            elif key == "excluded_properties":
-                try:
-                    # Handle both list and JSON string
-                    excluded_keys = (
-                        value if isinstance(value, list) else json.loads(value) if isinstance(value, str) else []
-                    )
-                    if excluded_keys:
-                        queryset = queryset.exclude(key__in=excluded_keys)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            elif key == "tags":
-                try:
-                    # Handle both list and JSON string
-                    tags = value if isinstance(value, list) else json.loads(value) if isinstance(value, str) else []
-                    if tags:
-                        queryset = queryset.filter(tagged_items__tag__name__in=tags).distinct()
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            elif key == "has_evaluation_contexts":
-                # Handle both string and boolean
-                if isinstance(value, bool):
-                    filter_value = value
-                else:
-                    filter_value = str(value).lower() in ("true", "1", "yes")
-
-                queryset = queryset.annotate(eval_tag_count=Count("flag_evaluation_contexts"))
-                if filter_value:
-                    queryset = queryset.filter(eval_tag_count__gt=0)
-                else:
-                    queryset = queryset.filter(eval_tag_count=0)
-
-        return queryset
-
     @validated_request(
         query_serializer=LocalEvaluationQuerySerializer,
         responses={
@@ -2906,6 +2775,138 @@ class FeatureFlagViewSet(
                 },
                 status=500,
             )
+
+    def _apply_filters(self, filters: dict, queryset: QuerySet) -> QuerySet:
+        """
+        Apply filters to queryset.
+
+        Handles both string values (from URL query params) and native Python types (from JSON body).
+        Used by both _filter_request and bulk_delete endpoints.
+        """
+
+        for key, value in filters.items():
+            if key == "active":
+                if value == "STALE":
+                    # Get stale flags using the best available signal:
+                    # 1. If last_called_at exists: flag hasn't been called in 30+ days
+                    # 2. If last_called_at is NULL: flag is 100% rolled out and 30+ days old
+                    stale_threshold = thirty_days_ago()
+                    usage_based_stale = Q(last_called_at__lt=stale_threshold, active=True)
+                    # nosemgrep: python.django.security.audit.query-set-extra.avoid-query-set-extra (static SQL, no user input)
+                    config_based_queryset = queryset.filter(
+                        last_called_at__isnull=True,
+                        active=True,
+                        created_at__lt=stale_threshold,
+                    ).extra(
+                        where=[
+                            """
+                            (
+                                (
+                                    EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
+                                        WHERE elem->>'rollout_percentage' = '100'
+                                        AND (elem->'properties')::text = '[]'::text
+                                    )
+                                    AND (posthog_featureflag.filters->>'multivariate' IS NULL OR posthog_featureflag.filters->'multivariate' = '{}'::jsonb)
+                                )
+                                OR
+                                (
+                                    EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'multivariate'->'variants') AS variant
+                                        WHERE variant->>'rollout_percentage' = '100'
+                                    )
+                                    AND EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
+                                        WHERE elem->>'rollout_percentage' = '100'
+                                        AND (elem->'properties')::text = '[]'::text
+                                    )
+                                )
+                                OR
+                                (
+                                    EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(posthog_featureflag.filters->'groups') AS elem
+                                        WHERE elem->>'rollout_percentage' = '100'
+                                        AND (elem->'properties')::text = '[]'::text
+                                        AND elem->'variant' IS NOT NULL
+                                        AND elem->>'variant' IS NOT NULL
+                                    )
+                                    AND (posthog_featureflag.filters->>'multivariate' IS NOT NULL AND jsonb_array_length(posthog_featureflag.filters->'multivariate'->'variants') > 0)
+                                )
+                                OR (posthog_featureflag.filters IS NULL OR posthog_featureflag.filters = '{}'::jsonb)
+                            )
+                            """
+                        ]
+                    )
+                    queryset = queryset.filter(usage_based_stale) | config_based_queryset
+                else:
+                    # Handle both string "true"/"false" and boolean True/False
+                    is_active = value == "true" or value is True
+                    queryset = queryset.filter(active=is_active)
+            elif key == "created_by_id":
+                queryset = queryset.filter(created_by_id=value)
+            elif key == "search":
+                if isinstance(value, str):
+                    value = value.strip()
+                    if value:
+                        # Limit search term length for performance safety
+                        if len(value) > 200:
+                            raise serializers.ValidationError("Search term cannot exceed 200 characters")
+
+                        # Escape regex metacharacters first, then replace spaces with word boundary pattern
+                        escaped_value = re.escape(value)
+                        regex_pattern = escaped_value.replace(r"\ ", r"[\s\-_]*")
+                        queryset = queryset.filter(
+                            Q(key__iregex=regex_pattern)
+                            | Q(name__iregex=regex_pattern)
+                            | Q(experiment__name__iregex=regex_pattern, experiment__deleted=False)
+                        ).distinct()
+            elif key == "type":
+                if value == "boolean":
+                    queryset = queryset.filter(
+                        Q(filters__multivariate__variants__isnull=True) | Q(filters__multivariate__variants=[])
+                    )
+                elif value == "multivariant":
+                    queryset = queryset.filter(
+                        Q(filters__multivariate__variants__isnull=False) & ~Q(filters__multivariate__variants=[])
+                    )
+                elif value == "experiment":
+                    queryset = queryset.filter(~Q(experiment__isnull=True))
+                elif value == "remote_config":
+                    queryset = queryset.filter(is_remote_configuration=True)
+            elif key == "evaluation_runtime":
+                queryset = queryset.filter(evaluation_runtime=value)
+            elif key == "excluded_properties":
+                try:
+                    # Handle both list and JSON string
+                    excluded_keys = (
+                        value if isinstance(value, list) else json.loads(value) if isinstance(value, str) else []
+                    )
+                    if excluded_keys:
+                        queryset = queryset.exclude(key__in=excluded_keys)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif key == "tags":
+                try:
+                    # Handle both list and JSON string
+                    tags = value if isinstance(value, list) else json.loads(value) if isinstance(value, str) else []
+                    if tags:
+                        queryset = queryset.filter(tagged_items__tag__name__in=tags).distinct()
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif key == "has_evaluation_contexts":
+                # Handle both string and boolean
+                if isinstance(value, bool):
+                    filter_value = value
+                else:
+                    filter_value = str(value).lower() in ("true", "1", "yes")
+
+                queryset = queryset.annotate(eval_tag_count=Count("flag_evaluation_contexts"))
+                if filter_value:
+                    queryset = queryset.filter(eval_tag_count__gt=0)
+                else:
+                    queryset = queryset.filter(eval_tag_count=0)
+
+        return queryset
 
     def _handle_cached_response(self, cached_response: Optional[dict]) -> Optional[Response]:
         """Handle cached response including analytics tracking."""
