@@ -7787,6 +7787,26 @@ export namespace Schemas {
       readonly updated_at: string | null;
     }
 
+    export interface Dag {
+      readonly id: string;
+      /**
+       * Human-readable name for this DAG
+       * @maxLength 2048
+       */
+      name: string;
+      /** Optional description of the DAG's purpose */
+      description?: string;
+      /**
+       * Sync frequency string (e.g. '24hour', '7day')
+       * @nullable
+       */
+      sync_frequency?: string | null;
+      readonly node_count: number;
+      readonly created_at: string;
+      /** @nullable */
+      readonly updated_at: string | null;
+    }
+
     export type DashboardFilters = {[key: string]: unknown};
 
     /**
@@ -9255,6 +9275,7 @@ export namespace Schemas {
       WorkflowVariables: 'workflow_variables',
       SuggestedFilters: 'suggested_filters',
       RecentFilters: 'recent_filters',
+      PinnedFilters: 'pinned_filters',
       Empty: 'empty',
     } as const;
 
@@ -11676,6 +11697,11 @@ export namespace Schemas {
        * @nullable
        */
       soft_update?: boolean | null;
+      /**
+       * Optional DAG to place this view into
+       * @nullable
+       */
+      dag_id?: string | null;
       /** @nullable */
       readonly is_materialized: boolean | null;
       /** Where this SavedQuery is created.
@@ -12568,6 +12594,7 @@ export namespace Schemas {
       readonly source_id: string;
       readonly target_id: string;
       dag: string;
+      readonly dag_name: string;
       properties?: unknown;
       readonly created_at: string;
       /** @nullable */
@@ -12950,6 +12977,11 @@ export namespace Schemas {
       endpoint_is_active: boolean;
       /** ISO 8601 timestamp when this version was created. */
       version_created_at: string;
+      /**
+       * ISO 8601 timestamp when this version was last updated.
+       * @nullable
+       */
+      version_updated_at: string | null;
       /** User who created this version. */
       readonly version_created_by: UserBasic | null;
     }
@@ -18299,6 +18331,13 @@ export namespace Schemas {
       new_name: string;
     }
 
+    export interface LLMPromptEditOperation {
+      /** Text to find in the current prompt. Must match exactly once. */
+      old: string;
+      /** Replacement text. */
+      new: string;
+    }
+
     export interface LLMPromptPublic {
       id: string;
       name: string;
@@ -18988,6 +19027,7 @@ export namespace Schemas {
       name: string;
       type?: NodeTypeEnum;
       dag: string;
+      readonly dag_name: string;
       /** @maxLength 1024 */
       description?: string;
       /** @nullable */
@@ -19542,6 +19582,15 @@ export namespace Schemas {
       /** @nullable */
       previous?: string | null;
       results: CustomerProfileConfig[];
+    }
+
+    export interface PaginatedDAGList {
+      count: number;
+      /** @nullable */
+      next?: string | null;
+      /** @nullable */
+      previous?: string | null;
+      results: Dag[];
     }
 
     export interface PaginatedDashboardBasicList {
@@ -22431,6 +22480,26 @@ export namespace Schemas {
       readonly updated_at?: string | null;
     }
 
+    export interface PatchedDAG {
+      readonly id?: string;
+      /**
+       * Human-readable name for this DAG
+       * @maxLength 2048
+       */
+      name?: string;
+      /** Optional description of the DAG's purpose */
+      description?: string;
+      /**
+       * Sync frequency string (e.g. '24hour', '7day')
+       * @nullable
+       */
+      sync_frequency?: string | null;
+      readonly node_count?: number;
+      readonly created_at?: string;
+      /** @nullable */
+      readonly updated_at?: string | null;
+    }
+
     export type PatchedDashboardFilters = {[key: string]: unknown};
 
     /**
@@ -22628,6 +22697,11 @@ export namespace Schemas {
        * @nullable
        */
       soft_update?: boolean | null;
+      /**
+       * Optional DAG to place this view into
+       * @nullable
+       */
+      dag_id?: string | null;
       /** @nullable */
       readonly is_materialized?: boolean | null;
       /** Where this SavedQuery is created.
@@ -22819,6 +22893,7 @@ export namespace Schemas {
       readonly source_id?: string;
       readonly target_id?: string;
       dag?: string;
+      readonly dag_name?: string;
       properties?: unknown;
       readonly created_at?: string;
       /** @nullable */
@@ -23689,8 +23764,10 @@ export namespace Schemas {
     }
 
     export interface PatchedLLMPromptPublish {
-      /** Prompt payload to publish as a new version. */
+      /** Full prompt payload to publish as a new version. Mutually exclusive with edits. */
       prompt?: unknown;
+      /** List of find/replace operations to apply to the current prompt version. Each edit's 'old' text must match exactly once. Edits are applied sequentially. Mutually exclusive with prompt. */
+      edits?: LLMPromptEditOperation[];
       /**
        * Latest version you are editing from. Used for optimistic concurrency checks.
        * @minimum 1
@@ -23880,6 +23957,7 @@ export namespace Schemas {
       name?: string;
       type?: NodeTypeEnum;
       dag?: string;
+      readonly dag_name?: string;
       /** @maxLength 1024 */
       description?: string;
       /** @nullable */
@@ -30482,10 +30560,10 @@ export namespace Schemas {
     }
 
     export interface UserBlastRadiusResponse {
-      /** Number of users matching the condition */
-      users_affected: number;
-      /** Total number of users in the project */
-      total_users: number;
+      /** Number of entities matching the condition (users or groups depending on group_type_index) */
+      affected: number;
+      /** Total number of entities of this type in the project */
+      total: number;
     }
 
     export interface ViewLinkValidation {
@@ -32061,6 +32139,17 @@ export namespace Schemas {
     };
 
     export type CustomerProfileConfigsListParams = {
+    /**
+     * Number of results to return per page.
+     */
+    limit?: number;
+    /**
+     * The initial index from which to return the results.
+     */
+    offset?: number;
+    };
+
+    export type DataModelingDagsListParams = {
     /**
      * Number of results to return per page.
      */
